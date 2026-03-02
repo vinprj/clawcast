@@ -1,270 +1,351 @@
-import { useState, useEffect } from "react";
-import { useQuery, useMutation } from "./convex/react";
-import { api } from "./convex/_generated/api";
-import "./App.css";
+import { useState, useEffect, useMemo } from "react";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "../convex/_generated/api";
 
-function App() {
+// UI Components
+import { Button } from "@/components/ui/button";
+import {
+  ToastProvider,
+  ToastViewport,
+  Toast,
+  ToastTitle,
+  ToastDescription,
+  ToastClose,
+  useToast,
+  ToastIcon,
+} from "@/components/ui/toast";
+import {
+  SkillCardSkeleton,
+  LeaderboardItemSkeleton,
+  HeroSkeleton,
+} from "@/components/ui/skeleton";
+
+// Feature Components
+import { Header } from "@/components/header";
+import { SkillCard } from "@/components/skill-card";
+import { LeaderboardItem } from "@/components/leaderboard-item";
+import { SearchBar } from "@/components/search-bar";
+import { EmptyState } from "@/components/empty-state";
+import { AuthModal } from "@/components/auth-modal";
+
+// Icons
+import { Search, Trophy, Sparkles, RefreshCw } from "lucide-react";
+
+// Types
+interface Skill {
+  _id: string;
+  name: string;
+  slug: string;
+  description: string;
+  author: string;
+  stars: number;
+  url: string;
+  voteCount: number;
+}
+
+function AppContent() {
   const [view, setView] = useState<"browse" | "leaderboard">("browse");
   const [userId, setUserId] = useState<string>("");
   const [username, setUsername] = useState<string>("");
   const [showAuth, setShowAuth] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isVoting, setIsVoting] = useState<string | null>(null);
+  const [isSeeding, setIsSeeding] = useState(false);
 
+  const { toast, toasts, dismiss } = useToast();
+
+  // Convex queries
   const skills = useQuery(api.functions.getSkills) ?? [];
   const leaderboard = useQuery(api.functions.getLeaderboard) ?? [];
   const userVotes = useQuery(api.functions.getUserVotes, { userId }) ?? [];
 
+  // Convex mutations
   const voteMutation = useMutation(api.functions.vote);
   const seedMutation = useMutation(api.functions.seedSkills);
   const upsertUserMutation = useMutation(api.functions.upsertUser);
 
+  // Initialize user from localStorage
   useEffect(() => {
     const stored = localStorage.getItem("clawcast_user");
     if (stored) {
-      const { id, username } = JSON.parse(stored);
+      const { id, username: storedUsername } = JSON.parse(stored);
       setUserId(id);
-      setUsername(username || "");
+      setUsername(storedUsername || "");
     } else {
       const anonId = "anon_" + Math.random().toString(36).substr(2, 9);
       setUserId(anonId);
-      localStorage.setItem("clawcast_user", JSON.stringify({ id: anonId, username: "" }));
+      localStorage.setItem(
+        "clawcast_user",
+        JSON.stringify({ id: anonId, username: "" })
+      );
     }
   }, []);
 
+  // Upsert user when ID or username changes
   useEffect(() => {
     if (userId) {
-      upsertUserMutation({ anonymousId: userId, username: username || undefined });
+      upsertUserMutation({
+        anonymousId: userId,
+        username: username || undefined,
+      });
     }
   }, [userId, username]);
 
+  // Filter skills based on search query
+  const filteredSkills = useMemo(() => {
+    if (!searchQuery.trim()) return skills;
+    const query = searchQuery.toLowerCase();
+    return skills.filter(
+      (skill: Skill) =>
+        skill.name.toLowerCase().includes(query) ||
+        skill.description?.toLowerCase().includes(query) ||
+        skill.author?.toLowerCase().includes(query)
+    );
+  }, [skills, searchQuery]);
+
+  // Calculate total votes
+  const totalVotes = useMemo(
+    () => skills.reduce((sum: number, skill: Skill) => sum + (skill.voteCount || 0), 0),
+    [skills]
+  );
+
+  // Calculate max votes for leaderboard progress
+  const maxVotes = useMemo(
+    () => (leaderboard.length > 0 ? (leaderboard[0] as Skill).voteCount || 1 : 1),
+    [leaderboard]
+  );
+
+  // Handle vote
   const handleVote = async (skillId: string) => {
+    if (!userId) return;
+    
     setIsVoting(skillId);
-    await voteMutation({ skillId: skillId as any, userId });
+    try {
+      const result = await voteMutation({ skillId: skillId as any, userId });
+      
+      if (result.success) {
+        toast({
+          title: "Vote recorded!",
+          description: "Your vote has been counted.",
+          variant: "success",
+        });
+      } else {
+        toast({
+          title: "Vote removed",
+          description: "Your vote has been removed.",
+          variant: "info",
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to record vote. Please try again.",
+        variant: "error",
+      });
+    }
     setIsVoting(null);
   };
 
+  // Handle seed skills
   const handleSeed = async () => {
-    await seedMutation({});
+    setIsSeeding(true);
+    try {
+      const result = await seedMutation({});
+      toast({
+        title: "Skills initialized!",
+        description: result.message || "Top ClawHub skills have been loaded.",
+        variant: "success",
+      });
+    } catch (error) {
+      toast({
+        title: "Already initialized",
+        description: "Skills are already loaded in the database.",
+        variant: "info",
+      });
+    }
+    setIsSeeding(false);
   };
 
-  const handleSetUsername = () => {
-    localStorage.setItem("clawcast_user", JSON.stringify({ id: userId, username }));
+  // Handle set username
+  const handleSetUsername = async () => {
+    localStorage.setItem(
+      "clawcast_user",
+      JSON.stringify({ id: userId, username })
+    );
     setShowAuth(false);
+    
+    if (username) {
+      toast({
+        title: "Welcome!",
+        description: `You're now voting as @${username}`,
+        variant: "success",
+      });
+    }
   };
 
-  const filteredSkills = skills.filter((skill: any) =>
-    skill.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    skill.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    skill.author?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const totalVotes = skills.reduce((sum: number, skill: any) => sum + (skill.voteCount || 0), 0);
-  const maxVotes = leaderboard.length > 0 ? (leaderboard[0] as any).voteCount || 1 : 1;
+  // Loading state
+  const isLoading = skills.length === 0 && !searchQuery;
 
   return (
-    <div className="app">
-      <header className="header">
-        <div className="logo">
-          <span className="logo-icon">🎯</span>
-          <span className="logo-text">ClawCast</span>
-        </div>
-        <nav className="header-stats">
-          <div className="stat-pill">
-            <span className="stat-value">{skills.length}</span>
-            <span className="stat-label">skills</span>
-          </div>
-          <div className="stat-pill">
-            <span className="stat-value">{totalVotes}</span>
-            <span className="stat-label">votes</span>
-          </div>
-        </nav>
-        <div className="user-section">
-          {username ? (
-            <button onClick={() => setShowAuth(true)} className="user-badge">
-              <span className="user-avatar">{username[0].toUpperCase()}</span>
-              <span className="username">@{username}</span>
-            </button>
+    <div className="relative min-h-screen bg-background">
+      {/* Background gradients */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -left-1/4 -top-1/4 h-[600px] w-[600px] rounded-full bg-claw-orange/10 blur-[120px]" />
+        <div className="absolute -bottom-1/4 -right-1/4 h-[600px] w-[600px] rounded-full bg-claw-purple/10 blur-[120px]" />
+      </div>
+
+      <div className="relative">
+        <Header
+          skillsCount={skills.length}
+          totalVotes={totalVotes}
+          username={username || null}
+          onOpenAuth={() => setShowAuth(true)}
+        />
+
+        <main className="mx-auto max-w-3xl px-4 pb-16 pt-8 sm:px-6 sm:pt-12">
+          {/* Hero Section */}
+          {isLoading ? (
+            <HeroSkeleton />
           ) : (
-            <button onClick={() => setShowAuth(true)} className="login-btn">
-              Sign in
-            </button>
+            <section className="mb-8 text-center sm:mb-12">
+              <div className="inline-flex items-center gap-2 rounded-full border border-claw-orange/30 bg-claw-orange/10 px-3 py-1 text-xs font-medium text-claw-orange sm:px-4 sm:text-sm">
+                <Sparkles className="h-3.5 w-3.5" />
+                OpenClaw Ecosystem
+              </div>
+              <h1 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl lg:text-5xl">
+                Discover & Vote for
+                <br />
+                <span className="gradient-claw-text">Top ClawHub Skills</span>
+              </h1>
+              <p className="mx-auto mt-4 max-w-md text-sm text-muted-foreground sm:text-base">
+                Help the community find the best skills by casting your votes
+              </p>
+
+              {/* Tabs */}
+              <div className="mt-8 inline-flex rounded-xl border border-border/50 bg-secondary/50 p-1">
+                <Button
+                  variant={view === "browse" ? "default" : "ghost"}
+                  size="sm"
+                  onClick={() => setView("browse")}
+                  leftIcon={<Search className="h-4 w-4" />}
+                  className={view === "browse" ? "shadow-lg" : ""}
+                >
+                  Browse Skills
+                </Button>
+                <Button
+                  variant={view === "leaderboard" ? "default" : "ghost"}
+                  size="sm"
+                  onClick={() => setView("leaderboard")}
+                  leftIcon={<Trophy className="h-4 w-4" />}
+                  className={view === "leaderboard" ? "shadow-lg" : ""}
+                >
+                  Leaderboard
+                </Button>
+              </div>
+            </section>
           )}
-        </div>
-      </header>
 
-      <main className="main">
-        <section className="hero">
-          <div className="hero-badge">OpenClaw Ecosystem</div>
-          <h1 className="hero-title">
-            Discover &amp; Vote for
-            <br />
-            <span className="gradient-text">Top ClawHub Skills</span>
-          </h1>
-          <p className="hero-subtitle">
-            Help the community find the best skills by casting your votes
-          </p>
-          <div className="tabs">
-            <button
-              className={`tab ${view === "browse" ? "active" : ""}`}
-              onClick={() => setView("browse")}
-            >
-              <span className="tab-icon">🔍</span>
-              Browse Skills
-            </button>
-            <button
-              className={`tab ${view === "leaderboard" ? "active" : ""}`}
-              onClick={() => setView("leaderboard")}
-            >
-              <span className="tab-icon">🏆</span>
-              Leaderboard
-            </button>
-          </div>
-        </section>
+          {/* Search Bar - Only in browse view */}
+          {view === "browse" && skills.length > 0 && (
+            <div className="mb-6">
+              <SearchBar
+                value={searchQuery}
+                onChange={setSearchQuery}
+                placeholder="Search skills by name, description, or author..."
+              />
+            </div>
+          )}
 
-        {view === "browse" && (
-          <div className="search-bar">
-            <span className="search-icon">🔍</span>
-            <input
-              type="text"
-              placeholder="Search skills by name, description, or author..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="search-input"
-            />
-            {searchQuery && (
-              <button className="search-clear" onClick={() => setSearchQuery("")}>✕</button>
-            )}
-          </div>
-        )}
+          {/* Empty State - No skills loaded */}
+          {skills.length === 0 && !isLoading && (
+            <EmptyState type="no-skills" onAction={handleSeed} />
+          )}
 
-        {skills.length === 0 && (
-          <div className="empty-state">
-            <div className="empty-icon">📦</div>
-            <h3>No skills loaded yet</h3>
-            <p>Initialize the database with top ClawHub skills to get started</p>
-            <button onClick={handleSeed} className="seed-btn primary">
-              Initialize Skills
-            </button>
-          </div>
-        )}
+          {/* Content */}
+          {skills.length > 0 && (
+            <>
+              {view === "browse" ? (
+                <div className="space-y-3">
+                  {filteredSkills.length === 0 ? (
+                    <EmptyState type="no-results" />
+                  ) : (
+                    filteredSkills.map((skill: Skill, idx: number) => (
+                      <SkillCard
+                        key={skill._id}
+                        skill={skill}
+                        index={idx}
+                        hasVoted={userVotes.includes(skill._id)}
+                        isVoting={isVoting === skill._id}
+                        onVote={() => handleVote(skill._id)}
+                      />
+                    ))
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {leaderboard.map((skill: Skill, idx: number) => (
+                    <LeaderboardItem
+                      key={skill._id}
+                      skill={skill}
+                      index={idx}
+                      maxVotes={maxVotes}
+                    />
+                  ))}
+                </div>
+              )}
 
-        {skills.length > 0 && (
-          <>
-            {view === "browse" ? (
-              <div className="skills-grid">
-                {filteredSkills.length === 0 ? (
-                  <div className="empty-state">
-                    <div className="empty-icon">🔎</div>
-                    <h3>No matching skills</h3>
-                    <p>Try a different search term</p>
-                  </div>
-                ) : (
-                  filteredSkills.map((skill: any, idx: number) => (
-                    <div key={skill._id} className="skill-card">
-                      <div className="skill-rank">
-                        <span className="rank-number">#{idx + 1}</span>
-                      </div>
-                      <div className="skill-content">
-                        <div className="skill-header">
-                          <h3 className="skill-name">{skill.name}</h3>
-                          <a
-                            href={skill.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="skill-link"
-                          >
-                            ↗
-                          </a>
-                        </div>
-                        <p className="skill-description">{skill.description}</p>
-                        <div className="skill-meta">
-                          <span className="skill-author">
-                            <span className="author-dot"></span>
-                            {skill.author}
-                          </span>
-                          <span className="skill-stars">★ {Math.round(skill.stars / 1000)}k</span>
-                        </div>
-                      </div>
-                      <div className="skill-stats">
-                        <button
-                          className={`vote-btn ${userVotes.includes(skill._id) ? "voted" : ""} ${isVoting === skill._id ? "voting" : ""}`}
-                          onClick={() => handleVote(skill._id)}
-                        >
-                          <span className="vote-arrow">▲</span>
-                          <span className="vote-count">{skill.voteCount || 0}</span>
-                        </button>
-                      </div>
-                    </div>
-                  ))
+              {/* Footer Actions */}
+              <div className="mt-8 flex justify-center">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleSeed}
+                  isLoading={isSeeding}
+                  leftIcon={<RefreshCw className="h-4 w-4" />}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  Re-initialize Skills
+                </Button>
+              </div>
+            </>
+          )}
+        </main>
+
+        {/* Auth Modal */}
+        <AuthModal
+          isOpen={showAuth}
+          onClose={() => setShowAuth(false)}
+          username={username}
+          onUsernameChange={setUsername}
+          onSave={handleSetUsername}
+        />
+
+        {/* Toast Notifications */}
+        <ToastViewport />
+        {toasts.map((t) => (
+          <Toast key={t.id} variant={t.variant}>
+            <div className="flex items-start gap-3">
+              <ToastIcon variant={t.variant} />
+              <div className="flex-1">
+                {t.title && <ToastTitle>{t.title}</ToastTitle>}
+                {t.description && (
+                  <ToastDescription>{t.description}</ToastDescription>
                 )}
               </div>
-            ) : (
-              <div className="leaderboard">
-                {leaderboard.map((skill: any, idx: number) => {
-                  const medals = ["🥇", "🥈", "🥉"];
-                  const progressPct = Math.round(((skill.voteCount || 0) / maxVotes) * 100);
-                  return (
-                    <a
-                      key={skill._id}
-                      href={skill.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`leaderboard-item ${idx < 3 ? `top-${idx + 1}` : ""}`}
-                    >
-                      <div className="rank">
-                        {idx < 3 ? medals[idx] : <span className="rank-num">{idx + 1}</span>}
-                      </div>
-                      <div className="info">
-                        <h3>{skill.name}</h3>
-                        <span className="lb-author">by {skill.author}</span>
-                        <div className="progress-bar">
-                          <div className="progress-fill" style={{ width: `${progressPct}%` }}></div>
-                        </div>
-                      </div>
-                      <div className="votes">
-                        <span className="vote-count">{skill.voteCount || 0}</span>
-                        <span className="vote-label">votes</span>
-                      </div>
-                    </a>
-                  );
-                })}
-              </div>
-            )}
-          </>
-        )}
-
-        {skills.length > 0 && (
-          <div className="footer-actions">
-            <button onClick={handleSeed} className="seed-btn">
-              ↻ Re-initialize Skills
-            </button>
-          </div>
-        )}
-      </main>
-
-      {showAuth && (
-        <div className="modal-overlay" onClick={() => setShowAuth(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setShowAuth(false)}>✕</button>
-            <div className="modal-icon">👤</div>
-            <h2>Set Your Username</h2>
-            <p className="modal-subtitle">Choose a display name to show on your votes</p>
-            <input
-              type="text"
-              placeholder="Enter username..."
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSetUsername()}
-              autoFocus
-            />
-            <button onClick={handleSetUsername} className="btn-primary">
-              {username ? "Save Username" : "Continue Anonymously"}
-            </button>
-          </div>
-        </div>
-      )}
+            </div>
+            <ToastClose onClick={() => dismiss(t.id)} />
+          </Toast>
+        ))}
+      </div>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
   );
 }
 
